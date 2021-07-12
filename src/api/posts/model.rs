@@ -46,8 +46,17 @@ fn parse_tags(tags: &str) -> Result<Vec<String>, ()> {
     else { Err(()) }
 }
 
+#[derive(thiserror::Error, Display, Debug)]
+pub struct PostsQueryError(pub &'static str);
+
+impl From<&'static str> for PostsQueryError {
+    fn from(err: &'static str) -> Self {
+        Self(err)
+    }
+}
+
 impl<'a> PostsQuery<'a> {
-    pub fn validate(self) -> Result<(Vec<String>, SortBy, Direction), &'static str> {
+    pub fn validate(self) -> Result<(Vec<String>, SortBy, Direction), PostsQueryError> {
         let Self {tags, sort_by, direction} = self;
         let tags = tags.map_err(|_| ()).and_then(parse_tags).map_err(|_| "Tags parameter is required")?;
         let sort_by = check_missing(sort_by).map_err(|_| "sortBy parameter is invalid")?.unwrap_or(SortBy::Id);
@@ -95,7 +104,7 @@ impl std::hash::Hash for Post {
 #[derive(Serialize)]
 #[serde(crate = "rocket::serde")]
 #[serde(untagged)]
-pub enum PostsResponse {
-    Error { error: String },
+pub enum PostsResponse<'a> {
+    Error { error: &'a str },
     Success { posts: Vec<Post> },
 }
