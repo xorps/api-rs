@@ -1,0 +1,8 @@
+{
+    "addons": [
+        {"plan": "heroku-redis:hobby-dev"}
+    ],
+    "buildpacks": [
+        {"url": "emk/rust"}
+    ]
+}
