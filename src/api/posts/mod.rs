@@ -1,42 +1,54 @@
-mod model;
+pub mod model;
 mod util;
 
 use rocket::http::Status;
 use rocket::{get, State};
-use rocket::response::Debug;
+use rocket::Request;
+use rocket::response::{self, Responder};
+use rocket::serde::{Serialize, Deserialize, json::Json};
 use model::{PostsQuery, PostsResponse};
-use util::{fetch_all, redis_key};
-use redis::AsyncCommands;
+use util::fetch_all;
+use crate::cache::{self, IntoCacheKey, Cache};
 
-type Error = Debug<Box<dyn std::error::Error>>;
-
-async fn try_read_cache(r: Option<redis::aio::ConnectionManager>, key: &str) -> Result<Option<String>, Error> {
-    let mut r = if let Some(r) = r { r } else { return Ok(None) };
-    let cache: Option<String> = r.get(key).await.map_err(|e| Debug(e.into()))?;
-    Ok(cache)
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error(transparent)]
+    SerdeError(#[from] serde_json::Error),
+    #[error(transparent)]
+    FetchError(#[from] util::Error),
+    #[error(transparent)]
+    CacheError(#[from] cache::Error),
 }
 
-async fn try_write_cache(r: Option<redis::aio::ConnectionManager>, key: &str, value: &str) -> Result<(), Error> {
-    let mut r = if let Some(r) = r { r } else { return Ok(()) };
-    r.set(key, value).await.map_err(|e| Debug(e.into()))?;
-    Ok(())
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "rocket::serde")]
+struct ServerError<'a> {
+    status: &'a str,
+    message: &'a str,
+}
+
+impl<'r> Responder<'r, 'static> for Error {
+    fn respond_to(self, req: &'r Request<'_>) -> response::Result<'static> {
+        eprintln!("Internal Server Error: {}", self);
+        (Status::InternalServerError, Json(ServerError {status: "error", message: "Internal Server Error"})).respond_to(req)
+    }
 }
 
 #[get("/api/posts?<query..>")]
-pub async fn posts(r: &State<Option<redis::aio::ConnectionManager>>, query: PostsQuery<'_>) -> Result<(Status, String), Error> {
+pub async fn posts(r: &State<Cache>, query: PostsQuery<'_>) -> Result<(Status, String), Error> {
     let r = r.inner();
     let (tags, sort_by, direction) = match query.validate() {
         Err(msg) => {
             let msg = PostsResponse::Error { error: msg.into() };
-            let msg = serde_json::to_string(&msg).map_err(|e| Debug(e.into()))?;
+            let msg = serde_json::to_string(&msg)?;
             return Ok((Status::BadRequest, msg))
         },
         Ok(val) => val,
     };
-    let key = redis_key(&tags, sort_by, direction);
-    if let Some(cache) = try_read_cache(r.clone(), &key).await? { return Ok((Status::Ok, cache)) }
-    let posts = fetch_all(r.clone(), tags, sort_by, direction).await.map_err(|e| Debug(e.into()))?;
-    let value = serde_json::to_string(&PostsResponse::Success {posts}).map_err(|e| Debug(e.into()))?;
-    let _ = try_write_cache(r.clone(), &key, &value).await?;
+    let key = (&tags, sort_by, direction).into_cache_key();
+    if let Some(cache) = r.try_read(&key).await? { return Ok((Status::Ok, cache)) }
+    let posts = fetch_all(r.clone(), tags, sort_by, direction).await?;
+    let value = serde_json::to_string(&PostsResponse::Success {posts})?;
+    r.try_write(&key, &value).await?;
     Ok((Status::Ok, value))
 }

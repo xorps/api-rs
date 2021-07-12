@@ -1,8 +1,8 @@
 mod api;
-mod redis;
+mod cache;
 #[cfg(test)] mod tests;
 
 #[rocket::launch]
 pub fn rocket() -> _ {
-    rocket::build().attach(redis::redis()).mount("/", api::routes())
+    rocket::build().attach(cache::cache()).mount("/", api::routes())
 }
